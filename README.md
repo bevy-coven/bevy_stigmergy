@@ -73,7 +73,6 @@ The GIF above. `trail` and `rally` print the field as text, with no window or GP
 | `bevy_stigmergy` | Bevy |
 |---|---|
 | 0.2 | 0.20 |
-| 0.1 | 0.19 |
 
 ## Learn more
 
