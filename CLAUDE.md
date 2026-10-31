@@ -4,7 +4,7 @@ Stigmergic influence fields over a fixed cell grid: `N` scalar channels that age
 
 ## Source of truth
 
-This repository, [`Ladvien/bevy_stigmergy`](https://github.com/Ladvien/bevy_stigmergy), is canonical since 2026-10-23: it moved to Bevy 0.20 while `foundation_vs_slop/crates/bevy_stigmergy` stays frozen on 0.19. Do not mirror over it with `scripts/mirror_crates.sh`. MIT OR Apache-2.0.
+This repository, [`bevy-coven/bevy_stigmergy`](https://github.com/bevy-coven/bevy_stigmergy), is canonical since 2026-10-23: it moved to Bevy 0.20 while `foundation_vs_slop/crates/bevy_stigmergy` stays frozen on 0.19. Do not mirror over it with `scripts/mirror_crates.sh`. MIT OR Apache-2.0.
 
 ## Build and test
 

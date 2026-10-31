@@ -3,7 +3,7 @@ description: One iteration of the bevy_stigmergy improvement loop
 argument-hint: "[optional focus, e.g. 'issue #6 only']"
 ---
 
-One run of this command is one iteration of a long-running loop on bevy_stigmergy, a Bevy 0.20 leaf crate of stigmergic influence fields: `N` scalar channels over a fixed cell grid that agents deposit into, which evaporate, diffuse between floor cells and can be sampled or climbed, plus a vectorial rally pheromone. Games use it for trails nobody planned, crowds that route around each other and social fields (Sanctuary runs one every tick; bevy_emerge's crowds-and-paths family issue hosts it beside `bevy_orca`). Do ONE improvement per iteration, the single most valuable one from a game developer's point of view, finish it completely, then stop.
+One run of this command is one iteration of a long-running loop on bevy_stigmergy, a Bevy 0.20 leaf crate of stigmergic influence fields: `N` scalar channels over a fixed cell grid that agents deposit into, which evaporate, diffuse between floor cells and can be sampled or climbed, plus a vectorial rally pheromone. Games use it for trails nobody planned, crowds that route around each other and social fields (Sanctuary runs one every tick; bevy_grimoire's crowds-and-paths family issue hosts it beside `bevy_orca`). Do ONE improvement per iteration, the single most valuable one from a game developer's point of view, finish it completely, then stop.
 
 This crate must be correct AND deterministic AND cheap on the caller's frame. A field that drifts, a result that changes with the thread count, and a tick that stalls the thread that called it are all failures, however good the behaviour looks. The judgement here is a simulation engineer's: conservation where the model says so, a stencil that is the same on one thread or twenty-four, a cost that scales with the cells that matter, and an API that leaves the schedule, the world mapping and the walls to the caller (`CLAUDE.md`, "Where the boundary falls").
 
@@ -140,7 +140,7 @@ each line with a measurement, not an impression:
 Before you pick an item, list the repository's open issues and triage them:
 
 ```sh
-gh issue list --repo Ladvien/bevy_stigmergy --state open --limit 100 \
+gh issue list --repo bevy-coven/bevy_stigmergy --state open --limit 100 \
   --json number,title,labels,createdAt --jq '.[] | "#\(.number) \(.title)"'
 ```
 
@@ -155,7 +155,7 @@ Then, in this order:
    others.
 2. **An issue labelled `consumer` is the pass's item next, ahead of the series and your own candidates.**
    A project built on this crate needs it and is waiting. The `consumer:<name>` label says which project;
-   `consumer:bevy_emerge` is the owner's editor. Its own work resumes when the issue is closed as completed
+   `consumer:bevy_grimoire` is the owner's editor. Its own work resumes when the issue is closed as completed
    and it moves its git pin to a `main` commit containing the fix. Take the oldest one you can work this pass.
    - **Build the general form.** The requester is the example, never a name in this crate's API, a path or a
      default: this crate serves other projects too. Where an issue asks for something shaped to one project,
@@ -218,7 +218,7 @@ State in one sentence why your pick beats the runner-up. If it is too big, carve
 self-contained slice. Record the ranked candidate list in the log, not only the winner.
 
 **A pass never ends idle** (owner, 2026-10-29: "If they're not addressing bugs or enhancing features, they need to evolve their own code base to support Bevy Emerge better or add new features. Research these things in home still, implement them. They shouldn't stay idle."). An empty issue list or a stale backlog is this step's input, never a reason to ship nothing, and a candidate is not "speculation" once it is researched. When the ranked list above gives no workable item, take the first of these that applies:
-1. **What the crate's consumers hand-roll.** Read how Sanctuary uses this crate (`gh repo clone Ladvien/sanctuary /tmp/sN/sanctuary -- --depth 1`, then `rg -l bevy_stigmergy`; removed afterwards) and bevy_emerge's crowds-and-paths issue (`gh issue view 107 --repo Ladvien/bevy_emerge`). Find a formula, a wrapper or a query either writes by hand around this crate, and build its general form here, never named for either. Prove it with a test here.
+1. **What the crate's consumers hand-roll.** Read how Sanctuary uses this crate (`gh repo clone Ladvien/sanctuary /tmp/sN/sanctuary -- --depth 1`, then `rg -l bevy_stigmergy`; removed afterwards) and bevy_grimoire's crowds-and-paths issue (`gh issue view 107 --repo bevy-coven/bevy_grimoire`). Find a formula, a wrapper or a query either writes by hand around this crate, and build its general form here, never named for either. Prove it with a test here.
 2. **A feature a shipping game in this domain expects and this crate lacks**, found by research: home-still first (`distill_search`; for a paper the corpus lacks, `paper_search`, `paper_download`, `scribe_convert`, then `distill_index`), then shipped-game practice, then section 5 before any code.
 3. **Depth on the weakest existing feature**: measure it against its research note's validation targets and improve the worst gap.
 

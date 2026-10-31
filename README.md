@@ -6,7 +6,7 @@ Stigmergic influence fields over a fixed cell grid: `N` scalar channels that age
 
 **This repository is canonical.** It is where issues and pull requests belong; the split-out copies elsewhere are the ones that are frozen. MIT OR Apache-2.0.
 
-![A dark grid where ninety pale and amber dots move between a nest and a food source; a bright amber trail forms through a gap in a wall while older, dimmer trails elsewhere fade away](https://raw.githubusercontent.com/Ladvien/bevy_stigmergy/main/docs/foraging.gif)
+![A dark grid where ninety pale and amber dots move between a nest and a food source; a bright amber trail forms through a gap in a wall while older, dimmer trails elsewhere fade away](https://raw.githubusercontent.com/bevy-coven/bevy_stigmergy/main/docs/foraging.gif)
 
 That is `examples/foraging.rs`. Ninety foragers, a nest, a food source, and a wall with two gaps. **No agent has a map, a route, or any idea where the gaps are** — each reads three numbers at the cell it is standing on and steers by the gradient. The bright path is emergent, and the dim ones fading beside it are the point: evaporation is how the colony forgets a route that stopped paying.
 
