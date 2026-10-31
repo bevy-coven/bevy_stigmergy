@@ -35,3 +35,5 @@ Three things belong to the caller, and each is a thing this crate deliberately c
 - **What a wall is.** Diffusion moves value only between floor cells, so the field routes around obstacles for free; but the floor set is something you hand in, not something it discovers.
 
 A wrapper that holds those three and delegates the rest is the shape this is meant to be used in.
+
+README and docs follow https://github.com/bevy-coven/.github/blob/main/DOCUMENTATION.md; a feature is not done until its README line and, if visible, its GIF exist.

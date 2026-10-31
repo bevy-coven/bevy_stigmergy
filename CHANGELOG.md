@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The README follows the bevy-coven org's documentation guide: the org banner, badges, a Status and a Why line, a quick start that is compiled as a doctest, a still image, and "What you can do" bullets linking `docs/guide/`, where every section it used to carry now lives unchanged. Image and file links are absolute URLs, so docs.rs shows them.
+
 ### Added
 
 - `examples/foraging.rs` capture knob: `STIG_FRAMES=n` runs `n` steps and exits, `STIG_SHOT=prefix` writes `prefix-<step>.png` of the last step (and of every `STIG_EVERY`th). The example's clock is now its step count, so a run is the same every time; the wander phase used to read wall-clock time.

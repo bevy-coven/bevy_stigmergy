@@ -596,3 +596,8 @@ mod tests {
         }
     }
 }
+
+// The README's quick start is compiled as a doctest, so it cannot drift from the API.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
