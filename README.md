@@ -66,7 +66,7 @@ The GIF above. `trail` and `rally` print the field as text, with no window or GP
 
 ## Part of the Coven
 
-`bevy_stigmergy` is one of the [Bevy Coven](https://github.com/bevy-coven) crates: [`bevy_orca`](https://crates.io/crates/bevy_orca) crowds deposit into it and steer by it, and [`bevy_society`](https://crates.io/crates/bevy_society) keeps its villagers' presence and commotion in it. How Grimoire, the Coven's editor, uses it is on [its page in the book](https://bevy-coven.github.io/crates/bevy_stigmergy.html#use-it-in-grimoire).
+`bevy_stigmergy` is one of the [Bevy Coven](https://github.com/bevy-coven) crates: [`bevy_orca`](https://crates.io/crates/bevy_orca) crowds deposit into it and steer by it, and [`bevy_society`](https://crates.io/crates/bevy_society) keeps its villagers' presence and commotion in it. How the Cauldron, the Coven's editor, uses it is on [its page in the book](https://bevy-coven.github.io/crates/bevy_stigmergy.html#use-it-in-the-cauldron).
 
 ## Bevy compatibility
 
