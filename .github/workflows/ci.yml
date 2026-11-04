@@ -37,10 +37,10 @@ jobs:
 
       # **The load-bearing step, and it is `build` rather than `test` deliberately.**
       #
-      # `cargo test` compiles dev-dependencies, and this crate's dev-dependency is the FULL `bevy`
+      # A test run compiles dev-dependencies, and this crate's dev-dependency is the FULL `bevy`
       # umbrella (the `foraging` example needs a window and a 2D camera). Cargo unifies features across
-      # a build, so under `cargo test` the crate silently receives every Bevy feature there is — which
-      # means a hole in its own `[dependencies]` feature list cannot fail. A sibling crate shipped
+      # a build, so under `cargo nextest run` the crate silently receives every Bevy feature there is —
+      # which means a hole in its own `[dependencies]` feature list cannot fail. A sibling crate shipped
       # exactly that hole: it named a type behind a feature it never declared, every test passed, and
       # the published crate did not compile for anyone.
       - name: Build with only the declared features
@@ -53,11 +53,19 @@ jobs:
 
       # Includes `tests/leaf.rs`, the boundary ratchet — the thing that keeps this crate a field and
       # not a framework.
+      - uses: taiki-e/install-action@nextest
+
       - name: Test
-        run: cargo test
+        run: cargo nextest run --no-fail-fast
 
       - name: Test with every feature
-        run: cargo test --all-features
+        run: cargo nextest run --all-features --no-fail-fast
+
+      - name: Doctests (nextest does not run them)
+        run: cargo test --doc
+
+      - name: Doctests with every feature (nextest does not run them)
+        run: cargo test --doc --all-features
 
       - name: Build examples
         run: cargo build --examples
