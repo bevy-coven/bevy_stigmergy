@@ -23,6 +23,10 @@
 //! ticks and in what order relative to everything else — which is the only useful arrangement, because
 //! "deposit before or after the agents think" is a gameplay decision, not a library's.
 //!
+//! It owns no threads either. [`StigGrid::evaporate_diffuse`] runs on the thread that calls it, so a
+//! Bevy system never parks waiting on another pool; a large grid hands its stencil to the caller's own
+//! pool with [`StigGrid::evaporate_diffuse_with`], and gets the same bits.
+//!
 //! It also does not name the channels. A channel table is game content; a library that shipped one
 //! would be naming somebody else's game. Channels are `usize` indices, and `N` is yours to pick.
 //!
@@ -45,8 +49,9 @@
 //! * The neighbour sum keeps a fixed E/W/S/N order. Float addition is non-associative, so the order is
 //!   load-bearing rather than stylistic.
 //! * The diffusion is a pure stencil over disjoint output slots — each cell reads the *previous* grid
-//!   and writes only its own slot — so its result is identical for any thread count, which is what
-//!   makes the `rayon` pass safe.
+//!   and writes only its own slot — so its result is identical however the pass is split and on
+//!   however many threads it runs, which is what makes [`StigGrid::evaporate_diffuse_with`] safe to
+//!   hand to the caller's pool.
 //! * Skipping rock cells is exact, not an approximation: deposits are floor-masked, `0 · retain` is
 //!   still 0, and the diffusion double-buffer's rock cells stay 0 across the swap.
 //! * [`StigGrid::channels`] and [`RallyGrid::cells`] expose the **full** grids so a caller can fold the
@@ -63,7 +68,7 @@ mod vector;
 
 pub use frame::CellFrame;
 pub use grid::{in_grid, row_major};
-pub use scalar::{ChannelDef, StigGrid};
+pub use scalar::{ChannelDef, DiffuseChunk, DiffuseChunks, StigGrid};
 pub use vector::{RallyDef, RallyGrid};
 
 #[cfg(test)]
@@ -71,7 +76,7 @@ mod tests {
     use super::*;
     use bevy_math::{IVec2, Vec2};
 
-    /// A `w`×`h` grid whose floor set is every cell — ascending row-major, as the contract requires.
+    /// A `w`×`h` grid whose floor set is every cell, ascending row-major.
     fn all_floor(w: usize, h: usize) -> impl Iterator<Item = IVec2> {
         (0..h as i32).flat_map(move |y| (0..w as i32).map(move |x| IVec2::new(x, y)))
     }
@@ -232,9 +237,88 @@ mod tests {
         assert_eq!(g.sample_cell(0, IVec2::new(2, 0)), 0.5, "but a floor cell past it does: 1 - 2/4");
     }
 
+    // ---- Issue #7: diffusion moves value between floor cells and never makes or destroys it. ----
+
+    /// The floor total, summed in `f64` so the sum itself adds no rounding worth measuring.
+    fn floor_total<const N: usize>(g: &StigGrid<N>, channel: usize) -> f64 {
+        g.channels()[channel].iter().map(|&v| f64::from(v)).sum()
+    }
+
+    /// 64×48 with a wall down x = 32 open only at y = 24, and scattered single rock cells: every cell
+    /// beside the wall, a rock or the grid edge has fewer than four floor neighbours.
+    fn walled_floor() -> impl Iterator<Item = IVec2> {
+        all_floor(64, 48).filter(|c| if c.x == 32 { c.y == 24 } else { (c.x * 7 + c.y * 13) % 11 != 0 })
+    }
+
+    /// A 20×20 room with a one-cell-wide corridor leaving it east and ending in a dead end at x = 40.
+    fn dead_end_floor() -> impl Iterator<Item = IVec2> {
+        all_floor(64, 48).filter(|c| {
+            ((2..22).contains(&c.x) && (2..22).contains(&c.y)) || (c.y == 12 && (22..=40).contains(&c.x))
+        })
+    }
+
+    #[test]
+    fn diffusion_moves_value_without_making_or_losing_any() {
+        // 0.2.1 blended each cell toward the mean of its floor neighbours, which is not symmetric beside a
+        // wall, a rock or the grid edge: in 1000 ticks these three maps lost 9.8%, 11.7% and 35% of their
+        // total. Each has a deposit beside a wall, the grid edge or the end of the corridor.
+        let defs = [ChannelDef { evaporate: 0.0, diffuse: 0.25, deposit_radius: 2.0 }];
+        let maps: [(&str, Vec<IVec2>, [IVec2; 2]); 3] = [
+            ("open", all_floor(64, 48).collect(), [IVec2::new(0, 0), IVec2::new(50, 30)]),
+            ("walled", walled_floor().collect(), [IVec2::new(31, 24), IVec2::new(50, 47)]),
+            ("dead end", dead_end_floor().collect(), [IVec2::new(40, 12), IVec2::new(2, 2)]),
+        ];
+        for (name, floor, deposits) in maps {
+            let mut g = StigGrid::<1>::new(64, 48, floor.into_iter(), defs);
+            for at in deposits {
+                g.deposit(0, at, 100.0);
+            }
+            let start = floor_total(&g, 0);
+            for _ in 0..1000 {
+                g.evaporate_diffuse(1.0);
+            }
+            let rel = (floor_total(&g, 0) - start) / start;
+            assert!(rel.abs() < 1e-5, "{name}: the floor total moved by {rel:e} with evaporation 0");
+        }
+    }
+
+    #[test]
+    fn with_diffusion_on_the_total_decays_at_exactly_the_evaporation_rate() {
+        // Evaporation is the only thing that removes value, so the total after k ticks is (1 - e·dt)^k of
+        // the start whatever diffusion does to its shape. 0.2.1 was 6% high after 20 ticks here.
+        let defs = [ChannelDef { evaporate: 0.1, diffuse: 0.25, deposit_radius: 2.0 }];
+        let mut g = StigGrid::<1>::new(64, 48, walled_floor(), defs);
+        g.deposit(0, IVec2::new(31, 24), 10.0);
+        let start = floor_total(&g, 0);
+        for _ in 0..20 {
+            g.evaporate_diffuse(1.0);
+        }
+        let want = start * 0.9f64.powi(20);
+        let rel = (floor_total(&g, 0) - want) / want;
+        assert!(rel.abs() < 1e-5, "total off the evaporation rate by {rel:e}");
+    }
+
+    #[test]
+    fn a_uniform_field_stays_uniform_beside_walls() {
+        // The other half of a symmetric exchange: no spurious slope at a wall. A rule that conserved the
+        // total by letting each cell give `d / n` of itself to each neighbour would pile value into the
+        // cells beside walls, and every agent would read a gradient toward them.
+        let defs = [ChannelDef { evaporate: 0.0, diffuse: 0.25, deposit_radius: 0.0 }];
+        let floor: Vec<IVec2> = walled_floor().collect();
+        let mut g = StigGrid::<1>::new(64, 48, floor.iter().copied(), defs);
+        assert!(g.set_channel(0, &[1.0; 64 * 48]));
+        for _ in 0..1000 {
+            g.evaporate_diffuse(1.0);
+        }
+        for c in floor {
+            let v = g.sample_cell(0, c);
+            assert!((v - 1.0).abs() < 1e-6, "{c} drifted to {v}");
+        }
+    }
+
     #[test]
     fn a_cell_with_no_floor_neighbours_keeps_its_own_value() {
-        // The `n > 0.0` fallback: an isolated cell blends toward ITSELF, so full diffusion is a no-op.
+        // An isolated cell has no floor face to exchange across, so even full diffusion is a no-op.
         let floor = [IVec2::new(1, 1)];
         let defs = [ChannelDef { evaporate: 0.0, diffuse: 1.0, deposit_radius: 0.0 }];
         let mut g = StigGrid::<1>::new(3, 3, floor.into_iter(), defs);
@@ -269,6 +353,27 @@ mod tests {
     }
 
     #[test]
+    fn a_floor_set_in_any_order_with_repeats_is_the_same_field() {
+        // A caller's floor set comes from its own map, in whatever order its walk produced. Reversed and
+        // with every cell listed twice, it must give the field the ascending list gives: the same bits
+        // after a run of ticks (a repeated cell is not evaporated twice), and the same hotspot.
+        let defs = [ChannelDef { evaporate: 0.3, diffuse: 0.25, deposit_radius: 1.5 }];
+        let floor: Vec<IVec2> = all_floor(9, 7).filter(|c| c.x != 4 || c.y == 5).collect();
+        let scrambled = floor.iter().rev().chain(floor.iter()).copied();
+        let mut ascending = StigGrid::<1>::new(9, 7, floor.iter().copied(), defs);
+        let mut any_order = StigGrid::<1>::new(9, 7, scrambled, defs);
+        for t in 0..40 {
+            for g in [&mut ascending, &mut any_order] {
+                g.deposit(0, IVec2::new(t % 9, (t * 3) % 7), 1.0);
+                g.evaporate_diffuse_with(0.1, 3, |chunks| chunks.for_each(DiffuseChunk::run));
+            }
+        }
+        let bits = |g: &StigGrid<1>| g.channels()[0].iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&any_order), bits(&ascending));
+        assert_eq!(any_order.hotspot_cell(0), ascending.hotspot_cell(0));
+    }
+
+    #[test]
     fn an_empty_channel_has_no_hotspot() {
         let g = StigGrid::<1>::new(3, 3, all_floor(3, 3), [ChannelDef::default(); 1]);
         assert_eq!(g.hotspot_cell(0), (None, 0.0));
@@ -282,6 +387,106 @@ mod tests {
         let grad = g.gradient_cell(0, IVec2::new(2, 2));
         assert!(grad.x > 0.0, "value rises toward +x, so the gradient must too: {grad}");
         assert_eq!(grad.y, 0.0, "the deposit is symmetric in y");
+    }
+
+    // ---- Issue #8: the gradient beside a wall agrees with the zero-flux wall the tick computes. ----
+
+    /// A `w`×`h` field holding `f(x, y)` at every cell, in the row-major order `set_channel` takes.
+    fn field_of(w: usize, h: usize, f: impl Fn(i32, i32) -> f32) -> Vec<f32> {
+        let mut values = Vec::with_capacity(w * h);
+        for y in 0..h as i32 {
+            for x in 0..w as i32 {
+                values.push(f(x, y));
+            }
+        }
+        values
+    }
+
+    /// A one-channel grid over `floor`, 64×48, holding `values`, with the tick off.
+    fn held_field(floor: &[IVec2], values: &[f32]) -> StigGrid<1> {
+        let defs = [ChannelDef { evaporate: 0.0, diffuse: 0.0, deposit_radius: 0.0 }];
+        let mut g = StigGrid::<1>::new(64, 48, floor.iter().copied(), defs);
+        assert!(g.set_channel(0, values));
+        g
+    }
+
+    #[test]
+    fn a_uniform_field_has_no_slope_anywhere_walls_included() {
+        // 0.2.x read a rock or off-grid neighbour as 0.0, so a flat field reported a slope pointing away
+        // from every wall, rock and grid edge, and an agent fleeing it was pulled into them. The tick
+        // leaves a uniform field exactly uniform, so this is the field an idle map holds.
+        let defs = [ChannelDef { evaporate: 0.0, diffuse: 0.25, deposit_radius: 0.0 }];
+        let floor: Vec<IVec2> = walled_floor().collect();
+        let mut g = StigGrid::<1>::new(64, 48, floor.iter().copied(), defs);
+        assert!(g.set_channel(0, &[1.0; 64 * 48]));
+        g.evaporate_diffuse(1.0);
+        for c in floor {
+            assert_eq!(g.gradient_cell(0, c), Vec2::ZERO, "a flat field has a slope at {c}");
+        }
+    }
+
+    #[test]
+    fn each_floor_face_of_a_cell_adds_its_slope_and_a_wall_face_adds_none() {
+        // On the ramp 2x + y the central difference is (4, 2) in open floor: one cell of slope per floor
+        // face along an axis. A wall face adds nothing, so beside a wall the component across it is the
+        // one-sided difference from the floor side, a 1-wide corridor has no cross slope, and nothing
+        // ever points downhill on a ramp that only rises.
+        let ramp = field_of(64, 48, |x, y| (2 * x + y) as f32);
+        let maps: [(&str, Vec<IVec2>); 2] =
+            [("walled", walled_floor().collect()), ("dead end", dead_end_floor().collect())];
+        for (name, floor) in maps {
+            let g = held_field(&floor, &ramp);
+            let cells: std::collections::HashSet<IVec2> = floor.iter().copied().collect();
+            let is_floor = |c: IVec2| cells.contains(&c);
+            let (mut open, mut beside_wall) = (0, 0);
+            for &c in &floor {
+                let faces = |a: IVec2, b: IVec2| f32::from(is_floor(c + a)) + f32::from(is_floor(c + b));
+                let want = Vec2::new(2.0 * faces(IVec2::X, IVec2::NEG_X), faces(IVec2::Y, IVec2::NEG_Y));
+                assert_eq!(g.gradient_cell(0, c), want, "{name}: wrong slope at {c}");
+                if want == Vec2::new(4.0, 2.0) {
+                    open += 1;
+                } else {
+                    beside_wall += 1;
+                }
+            }
+            assert!(open > 0 && beside_wall > 0, "{name}: the map must have both open floor and wall faces");
+        }
+    }
+
+    #[test]
+    fn a_field_flat_across_a_wall_has_no_slope_across_it() {
+        // A field that varies along one axis only is flat across every wall face on the other, so the
+        // component across it is exactly zero at every floor cell, wall or no wall. Fleeing it can then
+        // never point into a wall.
+        let floor: Vec<IVec2> = walled_floor().collect();
+        let along_y = held_field(&floor, &field_of(64, 48, |_, y| (0.37 * y as f32).sin()));
+        let along_x = held_field(&floor, &field_of(64, 48, |x, _| (0.29 * x as f32).cos()));
+        let (mut y_slopes, mut x_slopes) = (0, 0);
+        for &c in &floor {
+            let (gy, gx) = (along_y.gradient_cell(0, c), along_x.gradient_cell(0, c));
+            assert_eq!(gy.x, 0.0, "a field flat along x has an x slope at {c}");
+            assert_eq!(gx.y, 0.0, "a field flat along y has a y slope at {c}");
+            y_slopes += usize::from(gy.y != 0.0);
+            x_slopes += usize::from(gx.x != 0.0);
+        }
+        assert!(y_slopes > 1000 && x_slopes > 1000, "the fields must really slope: {y_slopes}, {x_slopes}");
+    }
+
+    #[test]
+    fn a_cell_that_is_not_floor_has_no_slope() {
+        // Rock holds 0.0 as a storage invariant, not as a value, and off the grid there is no field: both
+        // read as the empty answer, however far off the grid and next to however steep a slope. A rock
+        // cell read against its floor neighbours would push a fleeing agent standing in it deeper in.
+        let floor: Vec<IVec2> = walled_floor().collect();
+        let g = held_field(&floor, &field_of(64, 48, |x, y| (2 * x + y) as f32));
+        let rock = IVec2::new(32, 10);
+        assert!(!floor.contains(&rock) && floor.contains(&IVec2::new(31, 10)));
+        assert_eq!(g.gradient_cell(0, IVec2::new(31, 10)), Vec2::new(2.0, 2.0), "the floor beside it slopes");
+        let not_floor = [rock, IVec2::new(0, 0), IVec2::new(-1, 5), IVec2::new(64, 5), IVec2::new(5, 48)];
+        let extremes = [IVec2::MAX, IVec2::MIN, IVec2::new(i32::MAX, 0), IVec2::new(0, i32::MIN)];
+        for c in not_floor.into_iter().chain(extremes) {
+            assert_eq!(g.gradient_cell(0, c), Vec2::ZERO, "slope at {c}");
+        }
     }
 
     #[test]
@@ -314,4 +519,85 @@ mod tests {
         let r = RallyGrid::new(2, 2, all_floor(2, 2), RallyDef::default());
         assert_eq!(r.sample_cell(IVec2::new(-1, -1)), Vec2::ZERO);
     }
+
+    // ---- Issue #9: a deposit that is not a finite number must not reach the field. ----
+
+    #[test]
+    fn a_non_finite_deposit_leaves_the_field_finite() {
+        let defs = [ChannelDef { evaporate: 0.1, diffuse: 0.25, deposit_radius: 2.0 }];
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut g = StigGrid::<1>::new(8, 8, all_floor(8, 8), defs);
+            g.deposit(0, IVec2::new(2, 2), 1.0);
+            let before = g.channels().clone();
+            g.deposit(0, IVec2::new(5, 5), bad);
+            assert_eq!(g.channels(), &before, "{bad}: a refused deposit writes nothing");
+            for _ in 0..20 {
+                g.evaporate_diffuse(0.1);
+            }
+            assert!(g.channels()[0].iter().all(|v| v.is_finite()), "{bad} poisoned the channel");
+            assert!(g.gradient_cell(0, IVec2::new(3, 3)).is_finite());
+            assert!(g.sample_cell(0, IVec2::new(2, 2)) > 0.0, "the real deposit survives");
+        }
+        let mut r = RallyGrid::new(8, 8, all_floor(8, 8), RallyDef::default());
+        r.deposit(IVec2::new(4, 4), Vec2::X);
+        let before = r.cells().to_vec();
+        for bad in [
+            Vec2::new(f32::NAN, 1.0),
+            Vec2::new(1.0, f32::NAN),
+            Vec2::new(f32::INFINITY, 0.0),
+            Vec2::new(0.0, f32::NEG_INFINITY),
+        ] {
+            r.deposit(IVec2::new(4, 4), bad);
+            assert_eq!(r.cells(), &before[..], "{bad}: a refused deposit writes nothing");
+        }
+        r.evaporate(0.1);
+        assert!(r.cells().iter().all(|v| v.is_finite()));
+        assert!(r.sample_cell(IVec2::new(4, 4)).x > 0.0, "the real deposit survives");
+    }
+
+    #[test]
+    fn a_deposit_stops_at_the_limit_instead_of_overflowing_to_infinity() {
+        let limit = f32::MAX / 16.0;
+        let defs = [ChannelDef { evaporate: 0.0, diffuse: 1.0, deposit_radius: 0.0 }];
+        let mut g = StigGrid::<1>::new(6, 6, all_floor(6, 6), defs);
+        // Every cell takes two of the largest finite deposits, of each sign in turn.
+        for sign in [1.0, -1.0] {
+            for c in all_floor(6, 6) {
+                g.deposit(0, c, sign * f32::MAX);
+                g.deposit(0, c, sign * f32::MAX);
+            }
+            assert!(g.channels()[0].iter().all(|&v| v == sign * limit), "pinned at {sign} * limit");
+            // The tick must carry a field this full: four neighbours summed would pass `f32::MAX` if the
+            // limit were any higher.
+            for _ in 0..200 {
+                g.evaporate_diffuse(1.0);
+            }
+            assert!(g.channels()[0].iter().all(|v| v.is_finite()), "the tick overflowed at {sign} * limit");
+            assert!(g.gradient_cell(0, IVec2::new(3, 3)).is_finite());
+            g.set_channel(0, &[0.0; 36]);
+        }
+
+        let def = RallyDef { decay: 0.0, accumulate: 1.0, deposit_radius: 0.0 };
+        let mut r = RallyGrid::new(4, 4, all_floor(4, 4), def);
+        for _ in 0..3 {
+            r.deposit(IVec2::new(1, 1), Vec2::new(f32::MAX, -f32::MAX));
+        }
+        assert_eq!(r.sample_cell(IVec2::new(1, 1)), Vec2::new(limit, -limit));
+    }
+
+    #[test]
+    fn a_rally_whose_accumulate_is_not_finite_deposits_nothing() {
+        // `∞ · 0` is NaN at the rim of a whole-number radius, where the falloff is 0.
+        for accumulate in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let def = RallyDef { decay: 0.3, accumulate, deposit_radius: 2.0 };
+            let mut r = RallyGrid::new(8, 8, all_floor(8, 8), def);
+            r.deposit(IVec2::new(4, 4), Vec2::X);
+            assert!(r.cells().iter().all(|&v| v == Vec2::ZERO), "{accumulate}: nothing written");
+        }
+    }
 }
+
+// The README's quick start is compiled as a doctest, so it cannot drift from the API.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

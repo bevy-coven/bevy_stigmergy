@@ -1,18 +1,24 @@
 # bevy_stigmergy
 
-> ⚠️ **Vibe Coded** — written by an AI agent working from a human's direction. It is used in a shipping game and covered by tests, but it has had no line-by-line human audit. Read it before you trust it.
+> ⚠️ **Vibe Coded.** Written by AI agents working from a human's direction, covered by tests rather than a line-by-line human review. Read the code before you rely on it for something you care about.
 
-Stigmergic influence fields over a fixed cell grid: `N` scalar channels that agents deposit into, which evaporate, diffuse between floor cells, and can be sampled or climbed — plus a vectorial rally pheromone for tracking a moving target.
+Fading marks on a grid that a crowd coordinates through, like ant trails: for game AI that should converge, scatter or rally without any agent planning a route.
 
-**This repository is canonical.** It is where issues and pull requests belong; the split-out copies elsewhere are the ones that are frozen. MIT OR Apache-2.0.
+[![crates.io](https://img.shields.io/crates/v/bevy_stigmergy.svg)](https://crates.io/crates/bevy_stigmergy) [![docs.rs](https://img.shields.io/docsrs/bevy_stigmergy)](https://docs.rs/bevy_stigmergy) [![CI](https://github.com/bevy-coven/bevy_stigmergy/actions/workflows/ci.yml/badge.svg)](https://github.com/bevy-coven/bevy_stigmergy/actions/workflows/ci.yml) [![Bevy 0.20](https://img.shields.io/badge/bevy-0.20-purple.svg)](https://bevyengine.org) [![licence](https://img.shields.io/badge/licence-MIT%20OR%20Apache--2.0-blue.svg)](#who-and-licence)
 
-![A dark grid where ninety pale and amber dots move between a nest and a food source; a bright amber trail forms through a gap in a wall while older, dimmer trails elsewhere fade away](https://raw.githubusercontent.com/Ladvien/bevy_stigmergy/main/docs/foraging.gif)
+![A dark grid where ninety pale and amber dots move between a nest and a food source; a bright amber trail forms through a gap in a wall while older, dimmer trails elsewhere fade away](https://raw.githubusercontent.com/bevy-coven/bevy_stigmergy/main/docs/foraging.gif)
 
-That is `examples/foraging.rs`. Ninety foragers, a nest, a food source, and a wall with two gaps. **No agent has a map, a route, or any idea where the gaps are** — each reads three numbers at the cell it is standing on and steers by the gradient. The bright path is emergent, and the dim ones fading beside it are the point: evaporation is how the colony forgets a route that stopped paying.
+*`examples/foraging.rs`: ninety foragers with no map and no route, each reading three numbers at its own cell, find the gap in the wall; the dim trails fading beside the bright one are evaporation forgetting routes that stopped paying.*
 
-## The idea
+**Status:** usable · Bevy 0.20 · MSRV 1.97.1
 
-Stigmergy is coordination *through the environment*. Agents write into a shared field and read it back, so a crowd converges on a trail, disperses from a threat, or recruits toward an alarm without anybody negotiating — the field is computed once and shared by all of them, and the group behaviour falls out.
+**Why:** a stigmergy field (agents coordinating through marks they leave in the world) is computed once and shared by the whole crowd, so a hundred agents cost one grid tick instead of a hundred path searches, and this crate is only the field: no schedule, no systems and no named channels, so it fits a game's own loop.
+
+## Quick start
+
+```sh
+cargo add bevy_stigmergy
+```
 
 ```rust
 use bevy_math::IVec2;
@@ -21,93 +27,62 @@ use bevy_stigmergy::{ChannelDef, StigGrid};
 const SCENT: usize = 0;
 const THREAT: usize = 1;
 
-let mut field = StigGrid::<2>::new(width, height, floor_cells(), [
-    ChannelDef { evaporate: 0.4, diffuse: 0.10, deposit_radius: 1.5 },  // SCENT
-    ChannelDef { evaporate: 1.2, diffuse: 0.05, deposit_radius: 3.0 },  // THREAT
+let (width, height) = (32, 32);
+let floor = (0..height).flat_map(|y| (0..width).map(move |x| IVec2::new(x, y)));
+let mut field = StigGrid::<2>::new(width as usize, height as usize, floor, [
+    ChannelDef { evaporate: 0.4, diffuse: 0.10, deposit_radius: 1.5 }, // SCENT
+    ChannelDef { evaporate: 1.2, diffuse: 0.05, deposit_radius: 3.0 }, // THREAT
 ]);
 
-field.deposit(SCENT, cell, 1.0);        // placement
-field.evaporate_diffuse(dt);            // decay + spread, once a tick
-let here = field.sample_cell(SCENT, c); // query
-let uphill = field.gradient_cell(SCENT, c);
+let cell = IVec2::new(10, 10);
+field.deposit(SCENT, cell, 1.0);       // an agent marks where it stands
+field.evaporate_diffuse(1.0 / 60.0);   // decay and spread, once a tick
+let here = field.sample_cell(SCENT, cell);
+let uphill = field.gradient_cell(SCENT, cell + IVec2::X); // which way the scent is stronger
+assert!(here > 0.0 && uphill.x < 0.0);
 ```
 
-## What it deliberately does not do
-
-**It owns no resources, registers no systems, and has no schedule.** When deposits drain, when evaporation runs, and where both sit relative to the agents reading the field are gameplay decisions. A crate that made them would be unusable in any game that wanted different ones.
-
-**It does not name your channels.** A channel table is game content. Channels are `usize` indices and `N` is yours to pick, so "what does channel 3 mean" stays a question about your game.
-
-**It works in cell space, not world space.** Every entry point takes an `IVec2` cell. The crate does not decide how big a cell is or where the grid sits in the world.
-
-[`CellFrame`] is an optional plain value type for the mapping nearly every caller writes anyway — an axis-aligned grid of uniform cells:
-
-```rust
-use bevy_math::Vec2;
-use bevy_stigmergy::CellFrame;
-
-// Cover a 120 x 80 metre field in 2-metre cells.
-let frame = CellFrame::covering(Vec2::new(-60.0, -40.0), Vec2::new(60.0, 40.0), 2.0);
-
-let mut field = StigGrid::<2>::new(frame.width, frame.height, frame.floor_cells(is_floor), [
-    ChannelDef { evaporate: 0.4, diffuse: 0.10, deposit_radius: 1.5 },
-    ChannelDef { evaporate: 1.2, diffuse: 0.05, deposit_radius: 3.0 },
-]);
-
-field.deposit(SCENT, frame.world_to_cell(agent), 1.0);
-let uphill = field.gradient_cell(SCENT, frame.world_to_cell(agent));
-```
-
-`cell_centre`, `contains` and `cells()` (ascending row-major, exactly what `StigGrid::new` wants of its floor set) round it out. It is a convenience, not a requirement: a caller with a hex sheet, a rotated board or a camera-relative projection ignores it and keeps its own mapping, and nothing in the crate behaves differently either way.
-
-## Units and time
-
-The crate has no clock. `evaporate_diffuse(dt)` applies `ChannelDef::evaporate` **per unit of whatever `dt` you pass**: per second when you step in seconds, per game-day when you step in game-days. The same number means different things in each — `0.4` loses 40% of the field per second in the first and 40% per game-day in the second. `diffuse` is different: it is a blend weight applied **per call**, not scaled by `dt`, so two calls at `dt/2` spread twice as much as one call at `dt`.
-
-## Features
-
-- `serde` — `Serialize`/`Deserialize` on `ChannelDef`, `RallyDef` and `CellFrame`. Also turns on `bevy_math/serialize`, which glam's impls need.
-- `reflect` — `bevy_reflect::Reflect` on the same types, for a host that stores them in a Bevy world.
-
-Both are off by default, and neither adds a type to the dependency graph a consumer did not ask for.
-
-## Two gotchas worth knowing
-
-- **A deposit masks its destination, not its path.** The kernel is a Euclidean disc that skips non-floor cells — not a flood fill and not a line-of-sight test — so a radius wide enough to span a wall still reaches the floor beyond it. That is deliberate (a smell or a sound goes round a corner). *Diffusion* is the pass that respects walls.
-- **Deposits accumulate with a non-associative `+=`.** If you produce them from an unordered source (an ECS query, a hash map), sort the batch before submitting or your field is not reproducible. This crate never sees the batch, only individual deposits, so it cannot do it for you.
-
-## Determinism
-
-Written to be bit-reproducible, because a simulation that hashes its state cannot afford otherwise: the neighbour sum keeps a fixed E/W/S/N order (float addition is non-associative); the diffusion is a pure stencil over disjoint output slots, so its result is identical at any thread count — which is what makes the `rayon` pass safe; and skipping rock cells is exact rather than approximate. `channels()` and `cells()` expose the **full** grids so you can fold the rock-cells-stay-zero invariant into your own fingerprint.
-
-## Used by
-
-The rest of the family, so a host learns one shape:
-
-- [`bevy_orca`](https://crates.io/crates/bevy_orca) — the crowd that deposits into this field and steers by its gradient.
-- [`bevy_society`](https://crates.io/crates/bevy_society) — persons whose presence and commotion are channels here.
-
-## References
-
-- Holland & Melhuish, *Stigmergy, self-organization, and sorting in collective robotics* (1999)
-- Tang, Liu & Pan, ACO review, IEEE/CAA JAS (2021) — deposit, evaporation, positive feedback
-- Lewis, *Escaping the Grid*, Game AI Pro 2 Ch.29 — placement / diffusion / query
-- Mark, *Modular Tactical Influence Maps*, Game AI Pro 2 Ch.30
-- Tang et al., *Dynamic target searching and tracking with swarm robots based on stigmergy*, Robotics & Autonomous Systems (2019) — the vectorial pheromone
-- Dourvas, Sirakoulis & Adamatzky, IEEE Access (2019) — parallelising the diffusion stencil
-
-## Examples
+## Try it
 
 ```sh
-cargo run -p bevy_stigmergy --example trail     # terminal: a scent trail spreads, fades, respects walls
-cargo run -p bevy_stigmergy --example rally     # terminal: the vectorial pheromone tracking a target
-cargo run -p bevy_stigmergy --example foraging  # the gif above. Needs a GPU.
+cargo run --release --example foraging
 ```
 
-`trail` and `rally` render the field as ASCII — no window, no GPU. `trail` lays a channel along a walked path across a map with a wall and a single gap, so you can watch diffusion go through the gap and not through the wall. `rally` has three fixed scouts marking a target that keeps moving, then stops marking so you can see the recruitment expire itself.
+The GIF above. `trail` and `rally` print the field as text, with no window or GPU.
 
-`foraging` is three channels at once — a HOME beacon, a FOOD beacon, and a TRAIL that only laden foragers lay — and it is the example to read if you are tuning this into a game, because the single hardest thing here is picking weights that are in scale with each other. Measured in that example, a beacon gradient averages about `0.09` per cell. The first wander term tried was `2.2`, which is *larger than the homing signal it competes with*, so laden foragers wandered the whole map laying trail everywhere and the "path" was an undifferentiated wash. Steering weights have to be set against `weight * |gradient|`, not by taste — and the way to find out is to print the gradient magnitudes rather than squint at the picture.
+![The foraging example after eight seconds: one bright amber trail runs from the nest through the gap in the wall to the food, and the pale foragers crowd along it](https://raw.githubusercontent.com/bevy-coven/bevy_stigmergy/main/docs/media/foraging.png)
 
-## License
+*The same run at its last frame: the trail the colony settled on.*
+
+## What you can do
+
+- **Lay and read scalar channels**: `N` channels that agents deposit into, which evaporate and diffuse between floor cells but never through a wall, sampled or climbed by gradient: [the field](https://github.com/bevy-coven/bevy_stigmergy/blob/main/docs/guide/model.md).
+- **Track a moving target with a rally pheromone**: `RallyGrid` stores a vector per cell, so scouts can recruit others toward something that keeps moving: [the examples](https://github.com/bevy-coven/bevy_stigmergy/blob/main/docs/guide/examples.md).
+- **Map world space to cells your way**: the optional `CellFrame` covers an axis-aligned area in square cells, or keep your own hex or rotated mapping: [the field](https://github.com/bevy-coven/bevy_stigmergy/blob/main/docs/guide/model.md).
+- **Tick it on the thread you choose**: `evaporate_diffuse` runs inline; `evaporate_diffuse_with` hands you disjoint chunks for your own pool, bit-identical either way: [ticking the field](https://github.com/bevy-coven/bevy_stigmergy/blob/main/docs/guide/ticking.md).
+- **Keep a simulation reproducible**: fixed summation order and a pure stencil make the field bit-reproducible on any thread count: [determinism](https://github.com/bevy-coven/bevy_stigmergy/blob/main/docs/guide/ticking.md#determinism).
+- **Save it as data**: the `serde` and `reflect` features derive on `ChannelDef`, `RallyDef` and `CellFrame`; both are off by default.
+- **Avoid the three traps** that cost the most time: [gotchas](https://github.com/bevy-coven/bevy_stigmergy/blob/main/docs/guide/gotchas.md).
+
+## Part of the Coven
+
+`bevy_stigmergy` is one of the [Bevy Coven](https://github.com/bevy-coven) crates: [`bevy_orca`](https://crates.io/crates/bevy_orca) crowds deposit into it and steer by it, and [`bevy_society`](https://crates.io/crates/bevy_society) keeps its villagers' presence and commotion in it. How the Cauldron, the Coven's editor, uses it is on [its page in the book](https://bevy-coven.github.io/crates/bevy_stigmergy.html#use-it-in-the-cauldron).
+
+## Bevy compatibility
+
+| `bevy_stigmergy` | Bevy |
+|---|---|
+| 0.2 | 0.20 |
+
+## Learn more
+
+- [docs.rs/bevy_stigmergy](https://docs.rs/bevy_stigmergy): the API.
+- [The book page](https://bevy-coven.github.io/crates/bevy_stigmergy.html).
+- [`docs/guide/`](https://github.com/bevy-coven/bevy_stigmergy/blob/main/docs/guide/README.md): the field, ticking, gotchas, the examples and the references.
+- [`examples/`](https://github.com/bevy-coven/bevy_stigmergy/tree/main/examples) and [`CHANGELOG.md`](https://github.com/bevy-coven/bevy_stigmergy/blob/main/CHANGELOG.md).
+
+## Who and licence
+
+Maintained by [@Ladvien](https://github.com/Ladvien). This repository is canonical: issues and pull requests belong at [github.com/bevy-coven/bevy_stigmergy/issues](https://github.com/bevy-coven/bevy_stigmergy/issues), and contributions follow the org's [CONTRIBUTING.md](https://github.com/bevy-coven/.github/blob/main/CONTRIBUTING.md).
 
 MIT OR Apache-2.0, at your option.
