@@ -595,6 +595,63 @@ mod tests {
             assert!(r.cells().iter().all(|&v| v == Vec2::ZERO), "{accumulate}: nothing written");
         }
     }
+
+    // ---- Issue #10: any cell a caller can form is a deposit target, never a panic or a hang. ----
+
+    /// The cells at the ends of `i32`, which `CellFrame::world_to_cell` saturates a far point to.
+    const EXTREME_CELLS: [IVec2; 6] = [
+        IVec2::new(i32::MAX, 0),
+        IVec2::new(i32::MIN, 0),
+        IVec2::new(0, i32::MAX),
+        IVec2::new(0, i32::MIN),
+        IVec2::MAX,
+        IVec2::MIN,
+    ];
+
+    #[test]
+    fn an_extreme_cell_is_off_grid_not_a_panic() {
+        // A finite point far off the map saturates in world_to_cell, which documents it as off-grid.
+        let far = CellFrame::new(Vec2::ZERO, 1.0, 4, 4).world_to_cell(Vec2::new(3.0e9, 0.0));
+        assert_eq!(far, IVec2::new(i32::MAX, 0));
+
+        let mut g = StigGrid::<1>::new(4, 4, all_floor(4, 4), [ChannelDef::default()]);
+        let mut r = RallyGrid::new(4, 4, all_floor(4, 4), RallyDef::default());
+        for c in EXTREME_CELLS {
+            g.deposit(0, c, 1.0);
+            r.deposit(c, Vec2::X);
+            assert_eq!(g.gradient_cell(0, c), Vec2::ZERO, "{c:?}");
+            assert_eq!(g.sample_cell(0, c), 0.0, "{c:?}");
+        }
+        assert!(g.channels()[0].iter().all(|&v| v == 0.0), "nothing landed on the grid");
+        assert!(r.cells().iter().all(|&v| v == Vec2::ZERO));
+    }
+
+    #[test]
+    fn a_radius_wider_than_the_grid_covers_it_without_walking_the_whole_box() {
+        // `(2r+1)²` at this radius is 4·10¹⁰ cells: the old walk did not finish. Clipped to the grid it
+        // is 16 cells, and every one is well inside the disc.
+        const HUGE_RADIUS: f32 = 1.0e5;
+        let defs = [ChannelDef { evaporate: 0.0, diffuse: 0.0, deposit_radius: HUGE_RADIUS }];
+        let mut g = StigGrid::<1>::new(4, 4, all_floor(4, 4), defs);
+        g.deposit(0, IVec2::new(1, 1), 1.0);
+        for c in all_floor(4, 4) {
+            let expected = 1.0 - (c - IVec2::new(1, 1)).as_vec2().length() / HUGE_RADIUS;
+            assert_eq!(g.sample_cell(0, c), expected, "{c:?}");
+        }
+
+        // An infinite radius reaches the grid from any centre, even one at the end of `i32`, with a
+        // falloff of exactly 1 everywhere. A NaN radius reads as 0 and reaches only an in-grid centre.
+        for c in EXTREME_CELLS {
+            let defs = [ChannelDef { evaporate: 0.0, diffuse: 0.0, deposit_radius: f32::INFINITY }];
+            let mut g = StigGrid::<1>::new(4, 4, all_floor(4, 4), defs);
+            g.deposit(0, c, 1.0);
+            assert!(g.channels()[0].iter().all(|&v| v == 1.0), "{c:?}");
+            let def = RallyDef { decay: 0.0, accumulate: 1.0, deposit_radius: f32::NAN };
+            let mut r = RallyGrid::new(4, 4, all_floor(4, 4), def);
+            r.deposit(c, Vec2::X);
+            assert!(r.cells().iter().all(|&v| v == Vec2::ZERO), "{c:?}");
+        }
+    }
 }
 
 // The README's quick start is compiled as a doctest, so it cannot drift from the API.

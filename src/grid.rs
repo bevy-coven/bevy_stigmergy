@@ -104,6 +104,14 @@ pub(crate) fn floor_sets(
 /// reach the floor on the far side of it. That is deliberate (a deposit is a smell or a sound, and both
 /// go round corners), but it surprises often enough to be worth stating. Diffusion is the pass that
 /// respects walls.
+///
+/// **The walk is the disc's bounding box clipped to the grid, in `i64`, before any cell is formed**
+/// (#10). Any `center` is accepted, including the `i32::MAX` / `i32::MIN` that
+/// [`crate::CellFrame::world_to_cell`] saturates a far-away point to: an `i32` sum `center + offset`
+/// overflowed there (a panic under debug assertions). The cost is the cells in the grid ∩ box, not
+/// `(2r+1)²`, so a huge radius on a small grid is a pass over that grid, not a hang. Cells are visited
+/// in ascending row-major order and each falloff is computed exactly as before, so an in-grid deposit
+/// writes the same bits it always did.
 pub(crate) fn deposit_disc(
     width: usize,
     height: usize,
@@ -112,20 +120,35 @@ pub(crate) fn deposit_disc(
     radius: f32,
     mut emit: impl FnMut(usize, f32),
 ) {
+    // `max` also turns a NaN radius into 0: a NaN deposit radius deposits at the centre cell only.
     let radius = radius.max(0.0);
-    let r = radius.ceil() as i32;
-    for dy in -r..=r {
-        for dx in -r..=r {
-            let cell = center + IVec2::new(dx, dy);
-            if !in_grid(cell, width, height) || cell_flags[row_major(cell, width)] & IS_FLOOR == 0 {
+    // Saturating cast: `+∞` becomes `i64::MAX`, and the saturating bounds below keep that finite.
+    let r = radius.ceil() as i64;
+    let (cx, cy) = (i64::from(center.x), i64::from(center.y));
+    let (Ok(w), Ok(h)) = (i64::try_from(width), i64::try_from(height)) else {
+        return;
+    };
+    let (x0, x1) = (cx.saturating_sub(r).max(0), cx.saturating_add(r).min(w - 1));
+    let (y0, y1) = (cy.saturating_sub(r).max(0), cy.saturating_add(r).min(h - 1));
+    for y in y0..=y1 {
+        // `|dy|` and `|dx|` are at most `2³¹ + width`, so their squares are `u64`; the saturating ops
+        // cover a grid wider than `2³¹`, where an out-of-reach cell then reads as farther than any radius.
+        let dy = (y - cy).unsigned_abs();
+        let dy2 = dy.saturating_mul(dy);
+        // In the grid, so `y < height` and the row's first index fits `usize`.
+        let row = y as usize * width;
+        for x in x0..=x1 {
+            let i = row + x as usize;
+            if cell_flags[i] & IS_FLOOR == 0 {
                 continue;
             }
-            let dist = ((dx * dx + dy * dy) as f32).sqrt();
+            let dx = (x - cx).unsigned_abs();
+            let dist = (dx.saturating_mul(dx).saturating_add(dy2) as f32).sqrt();
             if dist > radius {
                 continue;
             }
             let falloff = if radius > 0.0 { 1.0 - dist / radius } else { 1.0 };
-            emit(row_major(cell, width), falloff);
+            emit(i, falloff);
         }
     }
 }
@@ -150,4 +173,54 @@ pub(crate) const VALUE_LIMIT: f32 = f32::MAX / 16.0;
 #[allow(clippy::manual_clamp)] // `clamp` is the slower form; the doc above says why
 pub(crate) fn deposited(cell: f32, delta: f32) -> f32 {
     (cell + delta).max(-VALUE_LIMIT).min(VALUE_LIMIT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The walk as it was before #10, the reference: the whole `(2r+1)²` box, with the bounds test on
+    /// each cell. It is only safe where `center ± r` fits `i32`, which is every case below.
+    fn unclipped(width: usize, height: usize, flags: &[u8], center: IVec2, radius: f32) -> Vec<(usize, u32)> {
+        let mut out = Vec::new();
+        let radius = radius.max(0.0);
+        let r = radius.ceil() as i32;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                let cell = center + IVec2::new(dx, dy);
+                if !in_grid(cell, width, height) || flags[row_major(cell, width)] & IS_FLOOR == 0 {
+                    continue;
+                }
+                let dist = ((dx * dx + dy * dy) as f32).sqrt();
+                if dist > radius {
+                    continue;
+                }
+                let falloff = if radius > 0.0 { 1.0 - dist / radius } else { 1.0 };
+                out.push((row_major(cell, width), falloff.to_bits()));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn the_clipped_walk_visits_what_the_whole_box_did_in_the_same_order_and_bits() {
+        // A grid with rock in it, so the floor test is exercised, and every centre within three cells
+        // of it, so every way the box can cross an edge or a corner is covered.
+        let (w, h) = (7usize, 5usize);
+        let floor = (0..h as i32).flat_map(|y| (0..w as i32).map(move |x| IVec2::new(x, y)));
+        let (_, flags) = floor_sets(w, h, floor.filter(|c| (c.x + 2 * c.y) % 5 != 0));
+        let mut compared = 0;
+        for radius in [0.0, 0.5, 1.0, 1.5, 2.0, 2.7, 4.0, 9.0, f32::NAN, -1.0] {
+            for cy in -4..h as i32 + 4 {
+                for cx in -4..w as i32 + 4 {
+                    let center = IVec2::new(cx, cy);
+                    let mut got = Vec::new();
+                    deposit_disc(w, h, &flags, center, radius, |i, f| got.push((i, f.to_bits())));
+                    assert_eq!(got, unclipped(w, h, &flags, center, radius), "{center:?} r={radius}");
+                    compared += got.len();
+                }
+            }
+        }
+        assert!(compared > 1000, "the comparison saw too few deposits to mean anything: {compared}");
+    }
 }

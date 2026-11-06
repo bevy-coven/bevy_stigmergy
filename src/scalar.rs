@@ -157,6 +157,11 @@ impl<const N: usize> StigGrid<N> {
     /// [`saturation_stats`](Self::saturation_stats) skip it while [`sample_cell`](Self::sample_cell) and
     /// [`gradient_cell`](Self::gradient_cell) return it. A finite `amount` that would take a cell past
     /// `±f32::MAX / 16` (about `2.1e37`) stops there instead of overflowing to `∞`.
+    ///
+    /// Any `center` is accepted: the part of the disc outside the grid is dropped, so a cell far off
+    /// the map (such as the `i32::MAX` that [`CellFrame::world_to_cell`](crate::CellFrame::world_to_cell)
+    /// saturates to) deposits nothing, and a radius wider than the grid costs one pass over the grid,
+    /// never the disc's whole bounding box (#10). A NaN `deposit_radius` reads as 0.
     pub fn deposit(&mut self, channel: usize, center: IVec2, amount: f32) {
         let (Some(def), Some(grid)) = (self.defs.get(channel), self.channels.get_mut(channel)) else {
             return;

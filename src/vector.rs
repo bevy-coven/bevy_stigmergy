@@ -83,6 +83,9 @@ impl RallyGrid {
     /// has not moved produces `0/0`.) So is any deposit while [`RallyDef::accumulate`] is not finite,
     /// since `c_a·s` is the amount written. A finite `s` that would take a component of a cell past
     /// `±f32::MAX / 16` (about `2.1e37`) stops there instead of overflowing to `∞`.
+    ///
+    /// Any `center` and radius are handled as [`StigGrid::deposit`](crate::StigGrid::deposit) handles
+    /// them: what falls off the grid is dropped, at the cost of the cells it covers on the grid (#10).
     pub fn deposit(&mut self, center: IVec2, s: Vec2) {
         if !Self::can_deposit(s, self.accumulate) {
             return;
